@@ -1,0 +1,13 @@
+body
+{
+/* background-image:
+url('bigg.gif');
+*/
+   background-color: #000000;
+   background-repeat: no-repeat;
+   background-attachment: fixed;
+
+   font-family: "Verdana";
+   font-size: 8pt;
+   color: #dddddd;
+}
