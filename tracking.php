@@ -34,6 +34,12 @@ if((int)$_POST['status'] && !empty($_POST['image']) && !empty($_POST['crop'])){
 		$cmd = '';
 		$cmd .= '( cd /var/www/html/CMT/ && ';
 		$cmd .= '/usr/bin/python /var/www/html/CMT/start.py --width '.$tracking_width.' --height '.$tracking_height.' --bbox '.$bbox.'';
+		if(isset($_POST['minspeed']) && (int)$_POST['minspeed'] > 0){
+			$cmd .= ' --minspeed '.(int)$_POST['minspeed'];
+		}
+		if(isset($_POST['maxspeed']) && (int)$_POST['maxspeed'] < 30){
+			$cmd .= ' --maxspeed '.(int)$_POST['maxspeed'];
+		}
 		$cmd .= ' --quiet ';
 //		$cmd .= ' --output-dir /var/www/html/CMT/output ';
 		$cmd .= ') ';
