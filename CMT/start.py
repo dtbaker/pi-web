@@ -83,34 +83,37 @@ def motor_speeds_timed(motor1, motor2):
 
 # motor1 is left, motor2 is right
 def motor_speeds(motor1, motor2):
+	motor1 = int(motor1)
+	motor2 = int(motor2)
+	# replace xd with xe in below serial bytes to get acceleration working
 	if(motor1 == 0 and motor2 == 0):
 		if not quiet:
 			print("Both motors stopping")
-		ser.write(b'\xd0') # both stop
+		ser.write(b'\xe0') # both stop
 		ser.write(chr(motor1))
 		ser.write(chr(motor2))
 	elif(motor1 >= 0 and motor2 >= 0):
 		if not quiet:
 			print("Both motors forward")
-		ser.write(b'\xd9')  # both forward
+		ser.write(b'\xe9')  # both forward
 		ser.write(chr(motor1))
 		ser.write(chr(motor2))
 	elif(motor1 < 0 and motor2 < 0):
 		if not quiet:
 			print("Both motors back")
-		ser.write(b'\xd6')  # both back
+		ser.write(b'\xe6')  # both back
 		ser.write(chr(abs(motor1)))
 		ser.write(chr(abs(motor2)))
 	elif(motor1 > 0 and motor2 <= 0):
 		if not quiet:
 			print("Turn right")
-		ser.write(b'\xd5')  # turn right
+		ser.write(b'\xe5')  # turn right
 		ser.write(chr(abs(motor1)))
 		ser.write(chr(abs(motor2)))
 	elif(motor1 < 0 and motor2 >= 0):
 		if not quiet:
 			print("Turn left")
-		ser.write(b'\xdA')  # turn left
+		ser.write(b'\xeA')  # turn left
 		ser.write(chr(abs(motor1)))
 		ser.write(chr(abs(motor2)))
 	else:
@@ -119,6 +122,64 @@ def motor_speeds(motor1, motor2):
 
 	if not quiet:
 		print ("Done")
+
+
+current_motor_speed = [0,0]
+initial_object_center_position = [0,0]
+initial_object_size = 0
+current_object_center_position = [0,0]
+current_object_size = 0
+
+c = threading.Condition()
+class Thread_Object_Move(threading.Thread):
+	def __init__(self, name):
+		threading.Thread.__init__(self)
+		self.name = name
+
+	def run(self):
+		global current_motor_speed
+		global initial_object_center_position
+		global initial_object_size
+		global current_object_center_position
+		global current_object_size
+		while True:
+			c.acquire()
+			if initial_object_size == current_object_size and len(set(current_object_center_position).intersection(initial_object_center_position)) == 2:
+				# object hasn't moved
+				c.wait()  # wait for the object tracking thread to tell us the object has moved.
+			else:
+				# object has moved
+				# work out how far it has moved ( left/right and forward/back ) then calculate what speed we have to move the motors
+				movement_multiplier = 1
+				left_right_diff = current_object_center_position[0] - initial_object_center_position[0]
+				if left_right_diff < -10:
+					# object has moved left, turn the robot left,
+					# increase speed of right motors, decrease speed of left motors
+					current_motor_speed[0] -= abs(left_right_diff) * movement_multiplier
+					current_motor_speed[1] += abs(left_right_diff) * movement_multiplier
+				elif left_right_diff > 10:
+					# object has moved right, turn the robot right
+					# increase speed of left motors, decrease speed of right motors
+					current_motor_speed[0] += abs(left_right_diff) * movement_multiplier
+					current_motor_speed[1] -= abs(left_right_diff) * movement_multiplier
+
+				else:
+					# object hasn't moved left/right yet, maybe forward/back
+					# todo: move forward/back with object size and ultrasound sensor
+					current_motor_speed[0] = 0
+					current_motor_speed[1] = 0
+				with open("log.txt", "a") as logfile:
+					logfile.write("Motor: " + str(current_motor_speed[0]) + " , " + str(current_motor_speed[1]))
+
+				motor_speeds(current_motor_speed[0], current_motor_speed[1])
+
+			c.release()
+
+
+
+object_mover = Thread_Object_Move("object_moving_thread")
+object_mover.start()
+object_mover.join()
 
 # write a stop signal to serial so our robot doesn't take off when we start
 motor_speeds(0, 0)
@@ -156,6 +217,18 @@ frame_limit = 1000
 tl = 0
 br = 0
 
+def PolyArea(x,y):
+	return 0.5*np.abs(np.dot(x,np.roll(y,1))-np.dot(y,np.roll(x,1)))
+
+def PolygonArea(corners):
+	n = len(corners) # of corners
+	area = 0.0
+	for i in range(n):
+		j = (i + 1) % n
+		area += corners[i][0] * corners[j][1]
+		area -= corners[j][0] * corners[i][1]
+	area = abs(area) / 2.0
+	return area
 
 # read a bunch of frames from the camera to start
 while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
@@ -199,6 +272,15 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 		if not quiet:
 			print( 'using', tl, br, 'as init bb' )
 
+
+		initial_object_center_position = [ (tl[0] + br[0]) / 2, (tl[1] + br[1]) / 2]
+		current_object_center_position = [ (tl[0] + br[0]) / 2, (tl[1] + br[1]) / 2]
+		initial_object_size = PolygonArea( [tl, (br[0],tl[1]), br, (tl[0], br[1]) ] )
+		with open("log.txt", "a") as logfile:
+			logfile.write("Initial Center: " + str(initial_object_center_position[0]) + " , " + str(initial_object_center_position[1]))
+			logfile.write("Initial Size: " + str(initial_object_size) )
+
+
 		CMT.initialise(im_gray0, tl, br)
 
 	elif(frame_counter > frame_init_at):
@@ -213,20 +295,13 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 		# Draw updated estimate
 		if CMT.has_result:
 
-			current_tl = int(CMT.tl[0])
-			starting_tl = int(tl[0])
+			current_object_center_position = [ (CMT.tl[0] + CMT.tr[0]) / 2, (CMT.tl[1] + CMT.bl[1]) / 2]
+			current_object_size = PolygonArea([CMT.tl, CMT.tr, CMT.br, CMT.bl])
+			with open("log.txt", "a") as logfile:
+				logfile.write("Current Center: " + str(current_object_center_position[0]) + " , " + str(current_object_center_position[1]))
+				logfile.write("Current Size: " + str(current_object_size) )
 
-			if current_tl < starting_tl-20:
-				# move robot left to catch up with object
-				# t = threading.Thread(target=motor_speeds_timed, args=(-12, 12))
-				# t.start()
-				motor_speeds(-12, 12)
-			elif current_tl > starting_tl+20:
-				motor_speeds(12, -12)
-			else:
-				motor_speeds(0, 0)
-
-
+			c.notify_all()
 
 			#print(np.array((CMT.tl, CMT.tr, CMT.br, CMT.bl, CMT.tl)))
 
