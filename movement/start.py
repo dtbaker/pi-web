@@ -33,8 +33,6 @@ ser = serial.Serial('/dev/ttyAMA0', 19200, timeout=0.5)
 with open("running-flag.txt", "a") as logfile:
 	logfile.write("start")
 
-CMT = CMT.CMT()
-
 # construct the argument parse and parse the arguments
 ap = argparse.ArgumentParser()
 
@@ -45,11 +43,15 @@ ap.add_argument('--width', dest='width', type=int, default=240, help='Capture wi
 ap.add_argument('--height', dest='height', type=int, default=180, help='Capture height')
 ap.add_argument('--maxspeed', dest='maxspeed', type=int, default=20, help='Max robot speed')
 ap.add_argument('--minspeed', dest='minspeed', type=int, default=11, help='Min robot speed')
+ap.add_argument('--objectwidth', dest='objectwidth', type=int, default=10, help='Rough width of initial object in cm')
+ap.add_argument('--focallength', dest='focallength', type=float, default=3.6, help='Camera focal length in mm')
 ap.add_argument('--no-scale', dest='estimate_scale', action='store_false', help='Disable scale estimation')
 ap.add_argument('--with-rotation', dest='estimate_rotation', action='store_true', help='Enable rotation estimation')
 ap.add_argument('--bbox', dest='bbox', help='Specify initial bounding box.')
+ap.add_argument('--frameimage', dest='frameimage', help='Specify start frame image.')
 ap.add_argument('--pause', dest='pause', action='store_true', help='Pause after every frame and wait for any key.')
 ap.add_argument('--output-dir', dest='output', help='Specify a directory for output data.')
+ap.add_argument('--tracker', dest='tracker', default='CMT', help='Which tracker to use.')
 ap.add_argument('--quiet', dest='quiet', action='store_true', help='Do not show graphical output (Useful in combination with --output-dir ).')
 ap.add_argument('--skip', dest='skip', action='store', default=None, help='Skip the first n frames', type=int)
 
@@ -71,32 +73,22 @@ def motor_speeds(motor1, motor2):
 	motor2 = int(motor2)
 	# replace xd with xe in below serial bytes to get acceleration working
 	if(motor1 == 0 and motor2 == 0):
-		if not quiet:
-			print("Both motors stopping")
 		ser.write(b'\xe0') # both stop
 		ser.write(chr(motor1))
 		ser.write(chr(motor2))
 	elif(motor1 >= 0 and motor2 >= 0):
-		if not quiet:
-			print("Both motors forward")
 		ser.write(b'\xe9')  # both forward
 		ser.write(chr(motor1))
 		ser.write(chr(motor2))
 	elif(motor1 < 0 and motor2 < 0):
-		if not quiet:
-			print("Both motors back")
 		ser.write(b'\xe6')  # both back
 		ser.write(chr(abs(motor1)))
 		ser.write(chr(abs(motor2)))
 	elif(motor1 > 0 and motor2 <= 0):
-		if not quiet:
-			print("Turn right")
 		ser.write(b'\xe5')  # turn right
 		ser.write(chr(abs(motor1)))
 		ser.write(chr(abs(motor2)))
 	elif(motor1 < 0 and motor2 >= 0):
-		if not quiet:
-			print("Turn left")
 		ser.write(b'\xeA')  # turn left
 		ser.write(chr(abs(motor1)))
 		ser.write(chr(abs(motor2)))
@@ -126,9 +118,12 @@ initial_object_size = 0
 current_object_center_position = [0,0]
 current_object_size = 0
 
-
-CMT.estimate_scale = args.estimate_scale
-CMT.estimate_rotation = args.estimate_rotation
+if(args.tracker == 'CMT'):
+	CMT = CMT.CMT()
+	CMT.estimate_scale = args.estimate_scale
+	CMT.estimate_rotation = args.estimate_rotation
+else:
+	CMT = cv2.Tracker_create(args.tracker)
 
 if args.pause:
 	pause_time = 0
@@ -168,9 +163,14 @@ if not quiet:
 vs = PiVideoStream((args.width, args.height)).start()
 time.sleep(2.0)
 
+
 frame_counter = 0
 frame_init_at = 20  # start processing once we've read this many frames, as it can take some time to get the cam warmed up
-frame_limit = 1000
+frame_limit = 10000
+
+object_size_percentage_average = []
+object_size_percentage_limit = 12
+kfilterfactor = 0.5
 
 # 240 x 180
 # 370 x 240
@@ -179,12 +179,10 @@ frame_limit = 1000
 tl = 0
 br = 0
 
-print("testing2")
-
 # read a bunch of frames from the camera to start
 while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 
-	print(time.time())
+	# print(time.time())
 
 	frame = vs.read()
 	# frame = imutils.resize(frame, width=image_resize)
@@ -193,6 +191,12 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 	# print("frame " + str(frame_counter))
 	if (frame_counter == frame_init_at):
 		# Read first frame
+		if args.frameimage is not None:
+			frame = cv2.imread(args.frameimage)
+			frame = imutils.resize(frame, width=args.width)
+			with open("log.txt", "a") as logfile:
+				logfile.write("Using frame image: " + str(args.frameimage) + "\n")
+
 		im_gray0 = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 		im_draw = np.copy(frame)
 
@@ -227,10 +231,28 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 		current_object_center_position = [(tl[0] + br[0]) / 2, (tl[1] + br[1]) / 2]
 		initial_object_size = PolygonArea([tl, (br[0], tl[1]), br, (tl[0], br[1])])
 		with open("log.txt", "a") as logfile:
-			logfile.write("Initial Center: " + str(initial_object_center_position[0]) + " , " + str(initial_object_center_position[1]) + "\n")
-			logfile.write("Initial Size: " + str(initial_object_size) + "\n")
+			s = "Initial Center: " + str(initial_object_center_position[0]) + " , " + str(initial_object_center_position[1])
+			if not quiet:
+				print(s)
+			logfile.write(s + "\n")
+			s = "Initial Size: " + str(initial_object_size)
+			if not quiet:
+				print(s)
+			logfile.write(s + "\n")
 
-		CMT.initialise(im_gray0, tl, br)
+		tic = time.time()
+		if args.tracker == 'CMT':
+			CMT.initialise(im_gray0, tl, br)
+		else:
+			CMT.init(frame, (tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]))
+		toc = time.time()
+
+		with open("log.txt", "a") as logfile:
+			s = "Tracker Init Time: " + str(args.tracker) + ": " + str(toc - tic)
+			if not quiet:
+				print(s)
+			logfile.write(s + "\n")
+
 
 	elif (frame_counter > frame_init_at):
 		im_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -238,15 +260,28 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 			im_draw = np.copy(frame)
 
 		tic = time.time()
-		CMT.process_frame(im_gray)
+		has_result = False
+		if args.tracker == 'CMT':
+			CMT.process_frame(im_gray)
+			if CMT.has_result:
+				has_result = True
+
+		else:
+			has_result, newbox = CMT.update(frame)
+			print(newbox)
 		toc = time.time()
 
 		# Draw updated estimate
-		if CMT.has_result:
+		if has_result:
 
 			current_object_center_position = [(CMT.tl[0] + CMT.tr[0]) / 2, (CMT.tl[1] + CMT.bl[1]) / 2]
-			current_object_size = PolygonArea([CMT.tl, CMT.tr, CMT.br, CMT.bl])
-				#logfile.write("Current Size: " + str(current_object_size) + "\n")
+			# current_object_center_position_new = [(CMT.tl[0] + CMT.tr[0]) / 2, (CMT.tl[1] + CMT.bl[1]) / 2]
+			# current_object_center_position[0] = (current_object_center_position_new[0] * kfilterfactor) + (current_object_center_position[0] * (1.0 - kfilterfactor))
+			# current_object_center_position[1] = (current_object_center_position_new[1] * kfilterfactor) + (current_object_center_position[1] * (1.0 - kfilterfactor))
+			# current_object_size = PolygonArea([CMT.tl, CMT.tr, CMT.br, CMT.bl])
+			current_object_size_new = PolygonArea([CMT.tl, CMT.tr, CMT.br, CMT.bl])
+			current_object_size = ( current_object_size_new * kfilterfactor ) + ( current_object_size * (1.0 - kfilterfactor))
+			# work out averages / kfilter
 
 			if initial_object_size == current_object_size and set(current_object_center_position) == set(
 					initial_object_center_position):
@@ -263,25 +298,48 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 				left_right_diff = current_object_center_position[0] - (args.width / 2)
 				speed = np.interp(abs(left_right_diff), [0, 100], [args.minspeed, args.maxspeed])
 
+				object_size_percent1 = round( (current_object_size / initial_object_size) * 100 )
+				foo1 = (int(CMT.tr[0]) - int(CMT.tl[0]))
+				foo2 =(int(br[0]) - int(tl[0]))
+				object_size_percent2 = round( ( (float(CMT.tr[0]) - float(CMT.tl[0])) / (float(br[0]) - float(tl[0])) ) * 100 )
+
+				forward_back = int(np.interp(abs(object_size_percent1), [0, 100], [args.maxspeed, 0]))
+
+
 				with open("log.txt", "a") as logfile:
-					logfile.write("Current Pos: " + str(current_object_center_position[0]) + " , " + str(current_object_center_position[1]) + " " + str(int(left_right_diff)) + "% from center, speed: " + str(speed) + "\n")
+					s = "Current Pos: " + str(current_object_center_position[0]) + " , " + str(current_object_center_position[1]) + " " + str(int(left_right_diff)) + "% from center, speed: " + str(speed)
+					if not quiet:
+						print(s)
+					logfile.write(s + "\n")
+					s = "Current Size: " + str(current_object_size) + ", " + str(object_size_percent1) + "%, " + str(object_size_percent2) + "% " + str(foo1) + "/" + str(foo2) + " " + str(CMT.tr[0]) + ":" + str(CMT.tl[0]) + ":" + str(br[0]) + ":" + str(tl[0])
+					if not quiet:
+						print(s)
+					logfile.write(s + "\n")
+					s = "Forward Back Speed: " + str(forward_back)
+					if not quiet:
+						print(s)
+					logfile.write(s + "\n")
+
 				if left_right_diff < -10:
 					# object has moved left more than 10%, turn the robot left,
 					# increase speed of right motors, decrease speed of left motors
 					#current_motor_speed[0] -= abs(left_right_diff) * movement_multiplier
 					#current_motor_speed[1] += abs(left_right_diff) * movement_multiplier
-					current_motor_speed[0] = speed * -1
-					current_motor_speed[1] = speed * 1
+					current_motor_speed[0] = forward_back + (speed * -1)
+					current_motor_speed[1] = forward_back + (speed * 1)
 
 				elif left_right_diff > 10:
 					# object has moved right, turn the robot right
 					# increase speed of left motors, decrease speed of right motors
 					#current_motor_speed[0] += abs(left_right_diff) * movement_multiplier
 					#current_motor_speed[1] -= abs(left_right_diff) * movement_multiplier
-					current_motor_speed[0] = speed * 1
-					current_motor_speed[1] = speed * -1
+					current_motor_speed[0] = forward_back + (speed * 1)
+					current_motor_speed[1] = forward_back + (speed * -1)
 
 
+				elif forward_back > 5:
+					current_motor_speed[0] = forward_back
+					current_motor_speed[1] = forward_back
 				else:
 					# object hasn't moved left/right yet, maybe forward/back
 					# todo: move forward/back with object size and ultrasound sensor
@@ -289,7 +347,10 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 					current_motor_speed[1] = 0
 
 				with open("log.txt", "a") as logfile:
-					logfile.write("Motor: " + str(current_motor_speed[0]) + " , " + str(current_motor_speed[1]) + "\n")
+					s = "Motor: " + str(current_motor_speed[0]) + " , " + str(current_motor_speed[1])
+					if not quiet:
+						print(s)
+					logfile.write(s + "\n")
 
 				# check speed limits.
 				if current_motor_speed[0] > args.maxspeed:
@@ -304,7 +365,11 @@ while frame_counter < frame_limit and os.path.isfile("running-flag.txt"):
 				send_motor_speed = [int(current_motor_speed[0]), int(current_motor_speed[1])]
 				if (set(previous_motor_speed) != set(send_motor_speed)):
 					with open("log.txt", "a") as logfile:
-						logfile.write("Send Motor: " + str(send_motor_speed[0]) + " , " + str(send_motor_speed[1]) + "\n")
+						s = "Send Motor: " + str(send_motor_speed[0]) + " , " + str(send_motor_speed[1])
+						if not quiet:
+							print(s)
+						logfile.write(s + "\n")
+
 					motor_speeds(send_motor_speed[0], send_motor_speed[1])
 					previous_motor_speed = send_motor_speed
 

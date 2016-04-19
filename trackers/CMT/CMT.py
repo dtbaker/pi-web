@@ -53,6 +53,15 @@ class CMT(object):
 		background_classes = zeros(len(background_keypoints_cv))
 
 		# Stack background features and selected features into database
+		print("background")
+		print(background_features)
+		if background_features == None:
+			background_features = self.selected_features
+		print("background")
+		print(background_features)
+		print("selected")
+		print(self.selected_features)
+		print("doing:")
 		self.features_database = vstack((background_features, self.selected_features))
 
 		# Same for classes
